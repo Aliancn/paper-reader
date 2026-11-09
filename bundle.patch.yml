@@ -1,0 +1,4 @@
+# Enable the paper reader plugin in a profile.
+- insert:
+    - id: paper-reader
+      name: dsh-paper-reader

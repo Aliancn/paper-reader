@@ -1,0 +1,121 @@
+# Paper reader
+
+A right-sidebar paper reader for DeepSeek Harness. Upload a PDF and read it on a canvas rendered from the original PDF page, with PDF.js's text layer on top. The document is never converted to HTML, so fonts, images, figures, tables, equations, and column layout stay exactly as published. The full text is translated into Chinese automatically, and hovering a paragraph shows that paragraph's translation.
+
+## Features
+
+- **Right-sidebar entry** — appears as “论文阅读器 / Paper reader” in the sidebar guide.
+- **Local library** — uploads are stored in IndexedDB on the device; the original PDF bytes are retained unchanged. Reopen a paper from the recent list, or delete it together with its annotations and translations.
+- **Original-page rendering** — each PDF page is drawn from its own content stream, including embedded fonts and vector/raster figures. Bundled PDF.js CMaps, standard fonts, and wasm decoders avoid network fallbacks.
+- **Layout-aware paragraphs** — opening a paper asks MinerU (when configured) for its layout blocks, so paragraphs follow the real column and block structure; without MinerU the bundled PDF.js text extraction builds them locally.
+- **Automatic full-text translation** — every paragraph is translated into Simplified Chinese by the configured chat model. Progress appears under the paper title; results are cached per paper so a reopened paper never translates again.
+- **Hover translation** — hovering a paragraph marks it and shows that paragraph's Chinese translation in a floating card below it, together with a one-line source excerpt. The paragraph under the pointer is resolved from normalized page geometry, so it works at any zoom or width.
+- **Formulas** — the translator is told to keep LaTeX (`$…$`, `$$…$$`) intact, and the hover card renders it with KaTeX (MathML output, so no font or stylesheet payload). MinerU equation blocks are displayed the same way.
+- **Text selection menu** — selecting text inside the reader opens a floating menu with:
+  - Highlight
+  - Add note
+  - Ask in chat
+- **Highlights and notes** — normalized page rectangles survive zoom and width changes; notes and highlights persist per paper.
+- **Ask in chat** — the hover card carries an “Ask in chat” action that quotes the whole hovered paragraph, so no drag is needed. The text-selection menu keeps its own entry for a partial passage. Either way a dialog opens with a default prompt in the current UI language, inserts the prompt and the quoted passage (atomic quote on newer shells, Markdown blockquote on older shells) into the current composer, and leaves sending to the user.
+- **Zoom and page navigation** — fit-width, step zoom, previous/next page, and page indicator.
+
+## Layout parsing
+
+Paragraph boxes come from one of two sources, in this order:
+
+1. **MinerU layout parse** — when a token is configured, the browser posts the original PDF to the plugin's Host route `POST /paper-reader/parse`. The Host uploads it to the MinerU cloud API (`/api/v4/file-urls/batch`), polls the batch, downloads the result ZIP, reads `layout.json`, and returns each page's `para_blocks` as normalized paragraph boxes. Titles, body text, lists, captions, and formulas each keep their own block, so a paragraph never spans two columns.
+2. **Built-in PDF.js extraction** — used when MinerU is not configured, fails, or times out. It clusters text runs into baselines, detects per-page column gutters (empty vertical bands), and merges lines into paragraphs.
+
+The parse is cached in IndexedDB per paper, so MinerU runs once per uploaded file. A parse failure falls back to the built-in extraction and shows an error toast.
+
+### Configuring MinerU
+
+Add the token to the `paper-reader` row of the profile's `cordis.patch.yml`:
+
+```yaml
+- id: paper-reader
+  name: dsh-paper-reader
+  config:
+    mineru:
+      token: sk-...
+```
+
+`MINERU_TOKEN` in the Host environment works too. `mineru.endpoint` overrides the API base URL (default `https://mineru.net/api/v4`) for a compatible self-hosted deployment.
+
+With MinerU enabled the PDF itself is uploaded to that service; without a token nothing leaves the device except paragraph text for translation.
+
+## Translation
+
+The browser half never holds translation credentials. It posts paragraph batches to the plugin's own Host route `POST /paper-reader/translate`.
+
+The configured chat model (the default model from Settings, e.g. `deepseek-flash`) translates each batch first: thinking is disabled, temperature is low, and the answer must come back as `[[n]]`-marked segments. Segments the model drops — or the whole batch, if the model route is unavailable — are filled by the Host `translator` service's free anonymous routes (`bing`, then `google`). So a paper that the model translates cleanly never sends text to Microsoft or Google.
+
+Set `config: { mode: 'service' }` on the `paper-reader` row in `cordis.patch.yml` to skip the model entirely and translate only through the anonymous routes.
+
+Each request carries at most 10 model-translated paragraphs (24 in service mode), 12 000 characters per paragraph, and 8 000 characters per model batch; the browser keeps two batches in flight. Failures are reported per paragraph, so the reader keeps the paragraphs that succeeded and offers a retry for the rest.
+
+Translations are stored in IndexedDB, keyed by paper and target language, together with the source text of each paragraph and the extraction-geometry version. A changed geometry version, a different source text, or a deleted cache entry simply re-derives the paragraph instead of reusing a stale box.
+
+Paragraph text is sent to the chat model for translation (and, only for paragraphs the model misses, to the anonymous Microsoft/Google endpoints). The PDF never goes to those translation endpoints; it only goes to MinerU when that is configured.
+
+## Performance notes
+
+- Resizing the sidebar is debounced (160 ms, 6 px dead band), so pages re-render once after the drag instead of on every frame.
+- Pages are memoized: translation progress updates and hover changes do not re-render other pages' JSX.
+- Only pages within 700 px of the viewport draw a canvas; offscreen pages render when they scroll in. Each canvas is capped at a 6 MP pixel budget.
+- The MinerU result ZIP is indexed first and only `layout.json` is inflated, so large result images never block the Host event loop.
+
+## Build
+
+Requires Node.js 20+.
+
+```sh
+npm install
+npm run build
+```
+
+The build generates `src/generated/pdf-worker-source.ts` and `src/generated/pdf-assets.ts` from `pdfjs-dist`, then emits:
+
+- `lib/client.js` — small sidebar shell, lazy-loads the reader
+- `lib/client.reader.js` — PDF engine, worker source, and compressed PDF.js assets
+- `lib/index.js` — host companion: the bounded translation route
+
+The PDF engine is only requested when a paper is opened.
+
+`lib/` and `src/generated/` are build output and are not tracked in git; `package.json` `files` collects them into the published tarball. The build is reproducible — a clean `npm install && npm run build` on the tagged commit reproduces the release artifacts byte for byte.
+
+## Install into a profile
+
+From a release tarball (no build step, no pnpm approval prompt):
+
+```sh
+dsh plugin --profile desktop add https://github.com/Aliancn/paper-reader/releases/download/v0.1.0/dsh-paper-reader-0.1.0.tgz
+```
+
+From a local checkout (after building):
+
+```sh
+npm install && npm run build
+dsh plugin --profile desktop add file:/absolute/path/to/paper-reader
+```
+
+From the GitHub source (pnpm will ask before running the `prepare` build script):
+
+```sh
+dsh plugin --profile desktop add github:Aliancn/paper-reader
+```
+
+The package declares `dsh.bundle`, so the CLI appends it to the profile's bundle list. The bundle patch inserts the `paper-reader` loader row; no manual patch is needed.
+
+Restart the host after installing so it re-reads its environment and serves the new client bundle.
+
+
+## Storage
+
+- Paper files and metadata: IndexedDB database `dsh-paper-reader`
+- Annotations: IndexedDB store `annotations`, keyed by paper and indexed by `paperId`
+- Translations: IndexedDB store `translations`, keyed by `paperId::language`
+- MinerU parses: IndexedDB store `parsed`, keyed by `paperId`
+- Last opened paper: `localStorage` key `dsh-paper-reader:last`
+
+Uploads are limited to 200 MB. The PDF itself stays on the device; only paragraph text is sent to the translation endpoints described above.

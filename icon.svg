@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Paper reader">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f3f5fb"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#eef1fa"/>
+  <path d="M18 12h18l12 12v28a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V16a4 4 0 0 1 4-4z" fill="url(#page)" stroke="#c94040" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M36 12v12h12" fill="none" stroke="#c94040" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M22 31h14M22 38h14M22 45h9" stroke="#c2c8d4" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="45" cy="45" r="11" fill="#4d6bfe" stroke="#ffffff" stroke-width="2.5"/>
+  <circle cx="45" cy="45" r="4.2" fill="none" stroke="#ffffff" stroke-width="1.8"/>
+  <path d="M34.2 45h21.6M45 34.2c2.6 3 3.9 6.6 3.9 10.8S47.6 52.8 45 55.8c-2.6-3-3.9-6.6-3.9-10.8S42.4 37.2 45 34.2z" fill="none" stroke="#ffffff" stroke-width="1.5"/>
+</svg>

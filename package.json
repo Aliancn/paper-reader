@@ -1,0 +1,65 @@
+{
+  "name": "dsh-paper-reader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PDF paper reader for the right sidebar with automatic full-text Chinese translation, hover translations, highlights, notes, and conversation questions.",
+  "license": "MIT",
+  "author": "Ning Cheng (Aliancn)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aliancn/paper-reader.git"
+  },
+  "homepage": "https://github.com/Aliancn/paper-reader#readme",
+  "bugs": {
+    "url": "https://github.com/Aliancn/paper-reader/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "pdf",
+    "paper",
+    "reader",
+    "translation"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./bundle.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "files": [
+    "lib/client.js",
+    "lib/client.reader.js",
+    "lib/index.js",
+    "locale/*.json",
+    "bundle.patch.yml",
+    "icon.svg"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepare": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "katex": "^0.19.1",
+    "pdfjs-dist": "6.3.289"
+  }
+}
