@@ -988,8 +988,10 @@ function SelectionMenu(props: {
       onDismiss()
     }
     document.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onPointer, true)
     return () => {
       document.removeEventListener('keydown', onKey)
+      document.removeEventListener('pointerdown', onPointer, true)
     }
   }, [onDismiss])
   return createPortal(<div
