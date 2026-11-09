@@ -1,6 +1,6 @@
 {
   "name": "dsh-paper-reader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "PDF paper reader for the right sidebar with automatic full-text Chinese translation, hover translations, highlights, notes, and conversation questions.",
