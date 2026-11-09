@@ -10,18 +10,43 @@ const TRANSLATIONS = 'translations'
 const PARSED = 'parsed'
 let database: Promise<IDBDatabase> | undefined
 
+/** The device ran out of room for the library. */
+export class StorageQuotaError extends Error {
+  constructor(message = 'The device has no room left for this paper') {
+    super(message)
+    this.name = 'StorageQuotaError'
+  }
+}
+
+/**
+ * IndexedDB reports a full disk as `QuotaExceededError` on the request or the
+ * transaction, and older engines use the legacy `NS_ERROR_DOM_QUOTA_REACHED`.
+ */
+export function isQuotaError(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false
+  const candidate = error as { name?: unknown; code?: unknown }
+  return candidate.name === 'QuotaExceededError'
+    || candidate.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || candidate.code === 22
+}
+
+/** Re-throw quota failures as a typed error so callers can react to that case alone. */
+function wrapError(error: unknown): unknown {
+  return isQuotaError(error) ? new StorageQuotaError() : error
+}
+
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => { resolve(request.result) }
-    request.onerror = () => { reject(request.error ?? new Error('IndexedDB request failed')) }
+    request.onerror = () => { reject(wrapError(request.error) ?? new Error('IndexedDB request failed')) }
   })
 }
 
 function transactionDone(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => { resolve() }
-    transaction.onerror = () => { reject(transaction.error ?? new Error('IndexedDB transaction failed')) }
-    transaction.onabort = () => { reject(transaction.error ?? new Error('IndexedDB transaction aborted')) }
+    transaction.onerror = () => { reject(wrapError(transaction.error) ?? new Error('IndexedDB transaction failed')) }
+    transaction.onabort = () => { reject(wrapError(transaction.error) ?? new Error('IndexedDB transaction aborted')) }
   })
 }
 
@@ -79,11 +104,82 @@ export async function storePaper(file: File, title: string): Promise<PaperMeta> 
   const meta: PaperMeta = {
     id, title, fileName: file.name, size: file.size, addedAt: now, lastOpenedAt: now,
   }
-  const { tx, store } = await stores([PAPERS, FILES], 'readwrite')
-  store(PAPERS).put(meta)
-  store(FILES).put({ id, blob: file })
-  await transactionDone(tx)
+  const write = async (): Promise<void> => {
+    const { tx, store } = await stores([PAPERS, FILES], 'readwrite')
+    store(PAPERS).put(meta)
+    store(FILES).put({ id, blob: file })
+    await transactionDone(tx)
+  }
+  try {
+    await write()
+  } catch (error) {
+    if (!isQuotaError(error)) throw error
+    // Make room once, then retry exactly once: looping risks deleting the whole
+    // library for a file that simply cannot fit.
+    const removed = await evictLeastRecent(id)
+    if (removed.length === 0) throw new StorageQuotaError('Not enough space for this PDF')
+    await write()
+  }
   return meta
+}
+
+/** How many papers one eviction pass may delete before giving up. */
+const EVICTION_LIMIT = 3
+
+/**
+ * Choose which papers to delete to free room.
+ *
+ * `papers` must be most-recently-opened first, which is what `listPapers`
+ * returns. The stalest entries go first, `keep` is never chosen, and at most
+ * `EVICTION_LIMIT` are returned so one oversized upload cannot wipe the library.
+ */
+export function selectEvictions(
+  papers: readonly PaperMeta[],
+  keep?: string,
+  limit = EVICTION_LIMIT,
+): string[] {
+  const stalestFirst = [...papers].reverse()
+  return stalestFirst
+    .filter(paper => paper.id !== keep)
+    .slice(0, Math.max(0, limit))
+    .map(paper => paper.id)
+}
+
+/**
+ * Free room after a write hit the quota.
+ *
+ * Order matters: cached parses and translations are rebuilt on demand, so they
+ * go first; the original PDFs are deleted only if that was not enough. Resolves
+ * to the ids of the papers actually deleted, so the caller can report what the
+ * eviction cost.
+ */
+export async function evictLeastRecent(keep?: string): Promise<string[]> {
+  try {
+    const { tx, store } = await stores([TRANSLATIONS, PARSED], 'readwrite')
+    store(TRANSLATIONS).clear()
+    store(PARSED).clear()
+    await transactionDone(tx)
+  } catch {
+    // Best effort: a cache that refuses to clear must not block eviction.
+  }
+
+  let rows: PaperMeta[]
+  try {
+    rows = await listPapers()
+  } catch {
+    return []
+  }
+
+  const removed: string[] = []
+  for (const id of selectEvictions(rows, keep)) {
+    try {
+      await removePaper(id)
+      removed.push(id)
+    } catch {
+      break
+    }
+  }
+  return removed
 }
 
 /** Mark a paper as recently opened. */

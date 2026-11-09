@@ -20,12 +20,14 @@ import {
   removeAnnotation,
   removePaper,
   storePaper,
+  isQuotaError,
   touchPaper,
   updatePaperMeta,
   writeParsed,
   writeTranslations,
 } from './storage.ts'
 import { PARAGRAPH_VERSION, type Paragraph } from './paragraphs.ts'
+import { DEFAULT_LANGUAGE, LANGUAGES, languageLabel, resolveLanguage, translationKey } from './languages.ts'
 import { parseAvailable, parseWithMineru } from './mineru.ts'
 import { batchParagraphs, splitText, translateTexts, translationStatus } from './translate.ts'
 import { askInConversation } from './ask-bridge.tsx'
@@ -53,10 +55,10 @@ import {
 } from './ui.tsx'
 
 const LAST_PAPER_KEY = 'dsh-paper-reader:last'
+/** Chosen translation target, persisted across sessions. */
+const LANGUAGE_KEY = 'dsh-paper-reader:language'
 const MAX_FILE_BYTES = 200 * 1024 * 1024
 const ZOOM_STEPS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 1.75, 2, 2.5, 3]
-/** Paragraph translations are cached and displayed in this language. */
-const TRANSLATION_LANGUAGE = 'zh'
 /** Batch requests kept in flight; the Host translates one batch per request. */
 const TRANSLATION_CONCURRENCY = 2
 
@@ -199,6 +201,13 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
   const [translationPhase, setTranslationPhase] = useState<TranslationPhase>('idle')
   const [translationProgress, setTranslationProgress] = useState({ done: 0, total: 0 })
   const [showTranslations, setShowTranslations] = useState(true)
+  const [targetLanguage, setTargetLanguage] = useState<string>(() => {
+    try {
+      return resolveLanguage(globalThis.localStorage?.getItem(LANGUAGE_KEY))
+    } catch {
+      return DEFAULT_LANGUAGE
+    }
+  })
   const [scrolling, setScrolling] = useState(false)
   const [translationAttempt, setTranslationAttempt] = useState(0)
   const translationSequence = useRef(0)
@@ -311,15 +320,16 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
 
   function persistTranslations(
     paperId: string,
+    language: string,
     sources: Record<string, string>,
     values: Record<string, string>,
     complete: boolean,
     provider?: string,
   ): Promise<void> {
     return writeTranslations({
-      id: `${paperId}::${TRANSLATION_LANGUAGE}`,
+      id: translationKey(paperId, language),
       paperId,
-      language: TRANSLATION_LANGUAGE,
+      language,
       version: PARAGRAPH_VERSION,
       ...(provider === undefined ? {} : { provider }),
       sources: { ...sources },
@@ -329,9 +339,10 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
     } satisfies TranslationCache).catch(() => {})
   }
 
-  /** Translate every paragraph once, reusing stored results for this paper. */
+  /** Translate every paragraph once, reusing stored results for this paper and language. */
   async function runTranslation(
     paperId: string,
+    language: string,
     list: readonly Paragraph[],
     sequence: number,
     signal: AbortSignal,
@@ -341,7 +352,7 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
     for (const paragraph of list) sources[paragraph.id] = paragraph.text
     let cache: TranslationCache | undefined
     try {
-      cache = await readTranslations(paperId, TRANSLATION_LANGUAGE)
+      cache = await readTranslations(paperId, language)
     } catch {
       cache = undefined
     }
@@ -360,7 +371,7 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
     const missing = list.filter(paragraph => known[paragraph.id] === undefined && paragraph.text.trim() !== '')
     if (missing.length === 0) {
       setTranslationPhase('done')
-      if (cache === undefined || !cache.complete) void persistTranslations(paperId, sources, known, true, cache?.provider)
+      if (cache === undefined || !cache.complete) void persistTranslations(paperId, language, sources, known, true, cache?.provider)
       return
     }
     setTranslationPhase('translating')
@@ -387,7 +398,7 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
         const batch = batches[cursor]!
         cursor += 1
         if (!current()) return
-        const reply = await translateTexts(batch.map(entry => entry.text), TRANSLATION_LANGUAGE, signal)
+        const reply = await translateTexts(batch.map(entry => entry.text), language, signal)
         if (!current()) return
         if (!reply.ok) {
           failures += 1
@@ -405,12 +416,12 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
         })
         setTranslations({ ...merged })
         setTranslationProgress({ done: Object.keys(merged).length, total: list.length })
-        void persistTranslations(paperId, sources, merged, false, provider)
+        void persistTranslations(paperId, language, sources, merged, false, provider)
       }
     }
     await Promise.all(Array.from({ length: Math.min(TRANSLATION_CONCURRENCY, batches.length) }, runBatch))
     const complete = list.every(paragraph => paragraph.text.trim() === '' || merged[paragraph.id] !== undefined)
-    void persistTranslations(paperId, sources, merged, complete, provider)
+    void persistTranslations(paperId, language, sources, merged, complete, provider)
     setTranslationPhase(complete ? 'done' : 'failed')
   }
 
@@ -471,15 +482,26 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
     }
   }, [paper?.id, bytes])
 
+  // Switching target language invalidates every shown translation: they are all
+  // in the previous language, so drop them before the translation effect runs.
+  const lastLanguage = useRef(targetLanguage)
+  useEffect(() => {
+    if (lastLanguage.current === targetLanguage) return
+    lastLanguage.current = targetLanguage
+    setTranslations({})
+    setTranslationProgress({ done: 0, total: 0 })
+    setTranslationPhase('waiting')
+  }, [targetLanguage])
+
   useEffect(() => {
     if (paper === undefined || paragraphs.length === 0) return
     const controller = new AbortController()
     translationAbort.current?.abort()
     translationAbort.current = controller
     const sequence = translationSequence.current
-    void runTranslation(paper.id, paragraphs, sequence, controller.signal)
+    void runTranslation(paper.id, targetLanguage, paragraphs, sequence, controller.signal)
     return () => { controller.abort() }
-  }, [paper?.id, paragraphs, translationAttempt])
+  }, [paper?.id, paragraphs, translationAttempt, targetLanguage])
 
   useEffect(() => {
     if (paper === undefined || bytes === undefined) return
@@ -581,8 +603,15 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
       setPapers(list => [meta, ...list])
       await openPaper(meta)
       notify('ok', t('toast.uploaded'))
-    } catch {
-      notify('error', t('toast.storageFailed'))
+    } catch (error) {
+      // The library prunes itself to fit a paper; re-read it so the pruned
+      // papers disappear from the list instead of failing silently.
+      notify('error', t(isQuotaError(error) ? 'toast.noSpace' : 'toast.storageFailed'))
+      try {
+        setPapers(await listPapers())
+      } catch {
+        // The list stays as it was; the toast already reported the failure.
+      }
     } finally {
       setUploading(false)
       if (fileInput.current !== null) fileInput.current.value = ''
@@ -765,6 +794,23 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
             : <>{pageLabel}{translationLabel === '' ? '' : ` · ${translationLabel}`}</>}
         </div>
       </div>
+      {paper !== undefined && <select
+        className="pr-language-select"
+        title={t('translate.target', { language: languageLabel(targetLanguage) })}
+        aria-label={t('translate.target', { language: languageLabel(targetLanguage) })}
+        value={targetLanguage}
+        onChange={(event) => {
+          const next = resolveLanguage(event.target.value)
+          setTargetLanguage(next)
+          try {
+            globalThis.localStorage?.setItem(LANGUAGE_KEY, next)
+          } catch {
+            // A blocked or full localStorage only costs the preference, not the translation.
+          }
+        }}
+      >
+        {LANGUAGES.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+      </select>}
       {paper !== undefined && <button
         type="button"
         className={`pr-icon-button ${translationPhase === 'failed' ? 'pr-icon-button-warn' : ''} ${showTranslations && translationPhase === 'done' ? 'pr-icon-button-active' : ''}`}

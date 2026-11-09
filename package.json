@@ -1,6 +1,6 @@
 {
   "name": "dsh-paper-reader",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "PDF paper reader for the right sidebar with automatic full-text Chinese translation, hover translations, highlights, notes, and conversation questions.",
@@ -55,7 +55,8 @@
   ],
   "scripts": {
     "build": "node build.mjs",
-    "prepare": "node build.mjs"
+    "prepare": "node build.mjs",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

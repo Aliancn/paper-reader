@@ -8,8 +8,8 @@ A right-sidebar paper reader for DeepSeek Harness. Upload a PDF and read it on a
 - **Local library** — uploads are stored in IndexedDB on the device; the original PDF bytes are retained unchanged. Reopen a paper from the recent list, or delete it together with its annotations and translations.
 - **Original-page rendering** — each PDF page is drawn from its own content stream, including embedded fonts and vector/raster figures. Bundled PDF.js CMaps, standard fonts, and wasm decoders avoid network fallbacks.
 - **Layout-aware paragraphs** — opening a paper asks MinerU (when configured) for its layout blocks, so paragraphs follow the real column and block structure; without MinerU the bundled PDF.js text extraction builds them locally.
-- **Automatic full-text translation** — every paragraph is translated into Simplified Chinese by the configured chat model. Progress appears under the paper title; results are cached per paper so a reopened paper never translates again.
-- **Hover translation** — hovering a paragraph marks it and shows that paragraph's Chinese translation in a floating card below it, together with a one-line source excerpt. The paragraph under the pointer is resolved from normalized page geometry, so it works at any zoom or width.
+- **Automatic full-text translation** — every paragraph is translated into the chosen target language by the configured chat model. Progress appears under the paper title; results are cached per paper and language so a reopened paper never translates again.
+- **Hover translation** — hovering a paragraph marks it and shows that paragraph's translation in a floating card below it, together with a one-line source excerpt. The paragraph under the pointer is resolved from normalized page geometry, so it works at any zoom or width.
 - **Formulas** — the translator is told to keep LaTeX (`$…$`, `$$…$$`) intact, and the hover card renders it with KaTeX (MathML output, so no font or stylesheet payload). MinerU equation blocks are displayed the same way.
 - **Text selection menu** — selecting text inside the reader opens a floating menu with:
   - Highlight
@@ -55,6 +55,10 @@ Set `config: { mode: 'service' }` on the `paper-reader` row in `cordis.patch.yml
 Each request carries at most 10 model-translated paragraphs (24 in service mode), 12 000 characters per paragraph, and 8 000 characters per model batch; the browser keeps two batches in flight. Failures are reported per paragraph, so the reader keeps the paragraphs that succeeded and offers a retry for the rest.
 
 Translations are stored in IndexedDB, keyed by paper and target language, together with the source text of each paragraph and the extraction-geometry version. A changed geometry version, a different source text, or a deleted cache entry simply re-derives the paragraph instead of reusing a stale box.
+
+### Target language
+
+The toolbar has a language picker with Chinese (simplified and traditional), English, Japanese, Korean, German, French, Spanish, Russian, and Portuguese. The choice applies to the open paper, is remembered across sessions in `localStorage`, and each language keeps its own cache entry, so switching back and forth never re-translates the same paragraphs. Any well-formed BCP 47 tag is accepted by the Host route; the picker only lists the languages above.
 
 Paragraph text is sent to the chat model for translation (and, only for paragraphs the model misses, to the anonymous Microsoft/Google endpoints). The PDF never goes to those translation endpoints; it only goes to MinerU when that is configured.
 
@@ -117,5 +121,24 @@ Restart the host after installing so it re-reads its environment and serves the 
 - Translations: IndexedDB store `translations`, keyed by `paperId::language`
 - MinerU parses: IndexedDB store `parsed`, keyed by `paperId`
 - Last opened paper: `localStorage` key `dsh-paper-reader:last`
+- Chosen target language: `localStorage` key `dsh-paper-reader:language`
 
 Uploads are limited to 200 MB. The PDF itself stays on the device; only paragraph text is sent to the translation endpoints described above.
+
+### When the device is full
+
+Browsers cap how much a site may store, and the cap is often far below what a library of PDFs needs. An upload that exceeds it raises `QuotaExceededError`; the reader then frees room and retries once:
+
+1. Every cached MinerU parse and translation is cleared — both are rebuilt on demand, so nothing the user typed is lost.
+2. The least recently opened papers are deleted, at most three per upload, never the paper being opened right now.
+
+If that still is not enough the upload fails with a "ran out of space" message instead of an unexplained storage error, and the list refreshes so the deleted papers disappear immediately. Highlights and notes are deleted together with their paper, so the eviction order is the stalest paper first.
+
+## Tests
+
+```sh
+npm test
+```
+
+The suite runs on `node:test` with no extra dependencies (Node 22 strips the TypeScript types). It covers target-language resolution and validation, paragraph extraction geometry (including two-column pages), translation batching and splitting, quota detection, and the eviction order.
+

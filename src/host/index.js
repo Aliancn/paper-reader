@@ -31,9 +31,9 @@ const MODEL_TIMEOUT_MS = 120_000
 const MODEL_MAX_TOKENS = 4096
 /** Free anonymous providers used only as a fallback for missing segments. */
 const PROVIDERS = ['bing', 'google']
-const DEFAULT_LANGUAGE = 'zh'
-const LANGUAGE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/
-const LANGUAGE_NAMES = {
+export const DEFAULT_LANGUAGE = 'zh'
+export const LANGUAGE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/
+export const LANGUAGE_NAMES = {
   zh: 'Simplified Chinese',
   'zh-cn': 'Simplified Chinese',
   'zh-hans': 'Simplified Chinese',
@@ -124,7 +124,7 @@ function parseRequest(text) {
   return { texts: clean, targetLanguage, provider }
 }
 
-function languageName(tag) {
+export function languageName(tag) {
   return LANGUAGE_NAMES[String(tag).toLowerCase()] ?? tag
 }
 

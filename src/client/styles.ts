@@ -58,6 +58,21 @@ export const CSS = String.raw`
 .pr-icon-button:disabled { color: var(--pr-faint); cursor: default; opacity: .5; }
 .pr-icon-button-active { color: var(--pr-accent); background: color-mix(in srgb, var(--pr-accent) 10%, transparent); }
 .pr-icon-button-warn { color: var(--dsw-alias-state-warning-primary, #c07a12); background: rgba(255, 174, 62, .14); }
+.pr-language-select {
+  flex: none;
+  max-width: 92px;
+  height: 28px;
+  padding: 0 4px;
+  color: var(--pr-muted);
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.pr-language-select:hover { color: var(--pr-text); background: var(--pr-hover); }
+.pr-language-select:focus-visible { outline: 2px solid var(--pr-accent); outline-offset: 1px; }
 .pr-badge {
   position: absolute;
   top: 1px;
