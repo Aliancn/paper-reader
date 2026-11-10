@@ -114,3 +114,17 @@ export function batchParagraphs<T extends { readonly text: string }>(
   if (current.length > 0) batches.push(current)
   return batches
 }
+
+/**
+ * Order pages for the translation queue: the viewport page first, then the
+ * pages after it (the reader's scroll direction), interleaving the pages
+ * before it at each distance. Ties keep ascending page order.
+ */
+export function orderPages(pages: readonly number[], focusPage: number): number[] {
+  const rank = (page: number): number => {
+    if (page === focusPage) return 0
+    const distance = Math.abs(page - focusPage)
+    return page > focusPage ? 2 * distance - 1 : 2 * distance
+  }
+  return [...pages].sort((left, right) => rank(left) - rank(right) || left - right)
+}

@@ -221,7 +221,9 @@ async function modelTranslate(ctx, route, texts, targetLanguage, signal) {
     system: MODEL_SYSTEM,
     messages: [{ role: 'user', content: [{ type: 'text', text: `${instruction}\n\n${numbered}` }] }],
     maxTokens: MODEL_MAX_TOKENS,
-    temperature: 0.2,
+    // Temperature 0: random sampling can break LaTeX markers mid-formula
+    // (same reasoning as pdf2zh's OpenAI translator).
+    temperature: 0,
     ...(signal === undefined ? {} : { signal }),
   }
   const timeout = new AbortController()

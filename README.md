@@ -55,7 +55,7 @@ With MinerU enabled the PDF itself is uploaded to that service; without a token 
 
 The browser half never holds translation credentials. It posts paragraph batches to the plugin's own Host route `POST /paper-reader/translate`.
 
-The configured chat model (the default model from Settings, e.g. `deepseek-flash`) translates each batch first: thinking is disabled, temperature is low, and the answer must come back as `[[n]]`-marked segments. Segments the model drops — or the whole batch, if the model route is unavailable — are filled by the Host `translator` service's free anonymous routes (`bing`, then `google`). So a paper that the model translates cleanly never sends text to Microsoft or Google.
+The configured chat model (the default model from Settings, e.g. `deepseek-flash`) translates each batch first: thinking is disabled, temperature is 0 so random sampling cannot break a formula mid-marker, and the answer must come back as `[[n]]`-marked segments. Segments the model drops — or the whole batch, if the model route is unavailable — are filled by the Host `translator` service's free anonymous routes (`bing`, then `google`). So a paper that the model translates cleanly never sends text to Microsoft or Google.
 
 Set `config: { mode: 'service' }` on the `paper-reader` row in `cordis.patch.yml` to skip the model entirely and translate only through the anonymous routes.
 
@@ -72,7 +72,7 @@ Pin the translation model independently of the chat default model with `translat
 
 A pinned model must answer without narration: the batch answer is split on `[[n]]` markers, so a model that writes a preamble before the first marker loses that batch to the slower anonymous routes. Choose a model that follows the marker format directly.
 
-Each request carries at most 10 model-translated paragraphs (24 in service mode), 12 000 characters per paragraph, and 8 000 characters per model batch; the browser keeps four batches in flight. Failures are reported per paragraph, so the reader keeps the paragraphs that succeeded and offers a retry for the rest.
+Each request carries at most 10 model-translated paragraphs (24 in service mode), 12 000 characters per paragraph, and 8 000 characters per model batch; the browser keeps four batches in flight. Pages are translated in an order derived from the current page: the visible page first, then pages by increasing distance, forward pages before backward pages at the same distance, so the paragraphs under the reader's eyes arrive first and the next page is ready before it is scrolled to. A failed page stops only its own batches and retries after a 15-second cooldown on the next page change or manual attempt; failures are reported per paragraph, so the reader keeps the paragraphs that succeeded.
 
 Translations are stored in IndexedDB, keyed by paper and target language, together with the source text of each paragraph and the extraction-geometry version. A changed geometry version, a different source text, or a deleted cache entry simply re-derives the paragraph instead of reusing a stale box.
 

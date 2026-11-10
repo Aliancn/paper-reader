@@ -29,7 +29,7 @@ import {
 import { PARAGRAPH_VERSION, type Paragraph } from './paragraphs.ts'
 import { DEFAULT_LANGUAGE, LANGUAGES, languageLabel, resolveLanguage, translationKey } from './languages.ts'
 import { parseAvailable, parseWithMineru } from './mineru.ts'
-import { batchParagraphs, splitText, translateTexts, translationStatus } from './translate.ts'
+import { batchParagraphs, orderPages, splitText, translateTexts, translationStatus } from './translate.ts'
 import { askInConversation } from './ask-bridge.tsx'
 import { setTabTitle } from './tab-title.ts'
 import {
@@ -63,6 +63,8 @@ const ZOOM_STEPS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 const TRANSLATION_CONCURRENCY = 4
 /** Persist the translation cache after this many batches, and once at completion. */
 const PERSIST_EVERY_BATCHES = 5
+/** A failed translation page waits this long before the next automatic retry. */
+const RETRY_COOLDOWN_MS = 15_000
 
 type TranslationPhase = 'idle' | 'waiting' | 'parsing' | 'translating' | 'done' | 'failed' | 'unavailable'
 /** Layout-parse schema version; bumping it re-parses stored papers. */
@@ -214,11 +216,14 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
   const [translationAttempt, setTranslationAttempt] = useState(0)
   const translationSequence = useRef(0)
   const translationAbort = useRef<AbortController>()
+  const failedAt = useRef(0)
+  const attemptRef = useRef(0)
 
   function resetTranslation(): void {
     translationSequence.current += 1
     translationAbort.current?.abort()
     translationAbort.current = undefined
+    failedAt.current = 0
     setParagraphs([])
     setTranslations({})
     setTranslationProgress({ done: 0, total: 0 })
@@ -341,13 +346,18 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
     } satisfies TranslationCache).catch(() => {})
   }
 
-  /** Translate every paragraph once, reusing stored results for this paper and language. */
+  /**
+   * Translate paragraphs page by page, viewport first, reusing stored results.
+   * Page failures cool down and retry on the next visible-page change or
+   * manual attempt; a failure never cancels the remaining pages.
+   */
   async function runTranslation(
     paperId: string,
     language: string,
     list: readonly Paragraph[],
     sequence: number,
     signal: AbortSignal,
+    focusPage: number,
   ): Promise<void> {
     const current = (): boolean => sequence === translationSequence.current && !signal.aborted
     const sources: Record<string, string> = {}
@@ -384,54 +394,76 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
       return
     }
     const limit = Math.max(500, Math.min(status.maxTextChars, 12_000))
-    // A paragraph longer than one request is translated in ordered sentence chunks.
-    const chunks = missing.flatMap((paragraph) => {
-      const parts = splitText(paragraph.text, limit)
-      return parts.map((text, index) => ({ paragraphId: paragraph.id, index, count: parts.length, text }))
-    })
-    const batches = batchParagraphs(chunks, limit, status.maxBatch, status.maxTotalChars)
+    // Pages ordered by distance from the viewport page, so the reader sees
+    // the page under their eyes translated first, then its neighbors.
+    const byPage = new Map<number, Paragraph[]>()
+    for (const paragraph of missing) {
+      const bucket = byPage.get(paragraph.page)
+      if (bucket === undefined) byPage.set(paragraph.page, [paragraph])
+      else bucket.push(paragraph)
+    }
+    const pageOrder = orderPages([...byPage.keys()], focusPage)
     const merged = { ...known }
     const partial = new Map<string, string[]>()
     let provider = cache?.provider
-    let failures = 0
-    let cursor = 0
     let persisted = 0
+    const batchesOf = (page: number) => {
+      const chunks = (byPage.get(page) ?? []).flatMap((paragraph) => {
+        // A paragraph longer than one request is translated in ordered sentence chunks.
+        const parts = splitText(paragraph.text, limit)
+        return parts.map((text, index) => ({ paragraphId: paragraph.id, index, count: parts.length, text }))
+      })
+      return batchParagraphs(chunks, limit, status.maxBatch, status.maxTotalChars)
+    }
+    let cursor = 0
+    const queue: { page: number, batches: ReturnType<typeof batchesOf> }[] = []
+    for (const page of pageOrder) queue.push({ page, batches: batchesOf(page) })
     const runBatch = async (): Promise<void> => {
-      while (cursor < batches.length) {
-        const batch = batches[cursor]!
+      while (cursor < queue.length) {
+        const entry = queue[cursor]!
         cursor += 1
-        if (!current()) return
-        const reply = await translateTexts(batch.map(entry => entry.text), language, signal)
-        if (!current()) return
-        if (!reply.ok) {
-          failures += 1
-          if (Object.keys(merged).length === 0 || failures >= 2) return
-          continue
-        }
-        provider = reply.provider ?? provider
-        batch.forEach((chunk, index) => {
-          const value = reply.translations?.[index]
-          if (typeof value !== 'string' || value.trim() === '') return
-          const parts = partial.get(chunk.paragraphId) ?? new Array<string>(chunk.count).fill('')
-          parts[chunk.index] = value.trim()
-          partial.set(chunk.paragraphId, parts)
-          if (parts.every(part => part !== '')) merged[chunk.paragraphId] = parts.join(' ')
-        })
-        setTranslations({ ...merged })
-        setTranslationProgress({ done: Object.keys(merged).length, total: list.length })
-        // One IndexedDB write per few batches: each write stores the whole
-        // cache object, so per-batch writes repeat the same work.
-        persisted += 1
-        if (persisted >= PERSIST_EVERY_BATCHES) {
-          persisted = 0
-          void persistTranslations(paperId, language, sources, merged, false, provider)
+        for (const batch of entry.batches) {
+          if (!current()) return
+          const reply = await translateTexts(batch.map(item => item.text), language, signal)
+          if (!current()) return
+          if (!reply.ok) {
+            // A failed page stops only its own batches; other pages keep going.
+            break
+          }
+          provider = reply.provider ?? provider
+          batch.forEach((chunk, index) => {
+            const value = reply.translations?.[index]
+            if (typeof value !== 'string' || value.trim() === '') return
+            const parts = partial.get(chunk.paragraphId) ?? new Array<string>(chunk.count).fill('')
+            parts[chunk.index] = value.trim()
+            partial.set(chunk.paragraphId, parts)
+            if (parts.every(part => part !== '')) merged[chunk.paragraphId] = parts.join(' ')
+          })
+          setTranslations({ ...merged })
+          setTranslationProgress({ done: Object.keys(merged).length, total: list.length })
+          // One IndexedDB write per few batches: each write stores the whole
+          // cache object, so per-batch writes repeat the same work.
+          persisted += 1
+          if (persisted >= PERSIST_EVERY_BATCHES) {
+            persisted = 0
+            void persistTranslations(paperId, language, sources, merged, false, provider)
+          }
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(TRANSLATION_CONCURRENCY, batches.length) }, runBatch))
+    await Promise.all(Array.from({ length: Math.min(TRANSLATION_CONCURRENCY, queue.length) }, runBatch))
     const complete = list.every(paragraph => paragraph.text.trim() === '' || merged[paragraph.id] !== undefined)
     void persistTranslations(paperId, language, sources, merged, complete, provider)
-    setTranslationPhase(complete ? 'done' : 'failed')
+    if (complete) {
+      failedAt.current = 0
+      setTranslationPhase('done')
+    } else {
+      // Only failed-page leftovers keep the cooldown; a page whose batches all
+      // returned but produced empty translations is a model refusal, retried
+      // the same way.
+      failedAt.current = Date.now()
+      setTranslationPhase('failed')
+    }
   }
 
   // Paragraph source: a cached or fresh MinerU layout parse, else local PDF.js text.
@@ -504,13 +536,17 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
 
   useEffect(() => {
     if (paper === undefined || paragraphs.length === 0) return
+    // A failed page retries automatically after a cooldown, driven by the
+    // page bar or the visible-page report; manual attempts bypass it.
+    if (failedAt.current !== 0 && Date.now() - failedAt.current < RETRY_COOLDOWN_MS && attemptRef.current === translationAttempt) return
+    attemptRef.current = translationAttempt
     const controller = new AbortController()
     translationAbort.current?.abort()
     translationAbort.current = controller
     const sequence = translationSequence.current
-    void runTranslation(paper.id, targetLanguage, paragraphs, sequence, controller.signal)
+    void runTranslation(paper.id, targetLanguage, paragraphs, sequence, controller.signal, currentPage)
     return () => { controller.abort() }
-  }, [paper?.id, paragraphs, translationAttempt, targetLanguage])
+  }, [paper?.id, paragraphs, translationAttempt, targetLanguage, currentPage])
 
   useEffect(() => {
     if (paper === undefined || bytes === undefined) return

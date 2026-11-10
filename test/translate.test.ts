@@ -1,7 +1,7 @@
 /** Paragraph batching and sentence splitting for the Host translation route. */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { batchParagraphs, splitText } from '../src/client/translate.ts'
+import { batchParagraphs, orderPages, splitText } from '../src/client/translate.ts'
 
 const entry = (text: string) => ({ text })
 
@@ -69,4 +69,22 @@ test('a single entry always forms one batch', () => {
   const batches = batchParagraphs([entry('only one')], 1000, 5)
   assert.equal(batches.length, 1)
   assert.equal(batches[0]!.length, 1)
+})
+
+
+test('the viewport page comes first, then pages by interleaved distance', () => {
+  // focus=5: 视口页 5 最先; 之后按距离档交错, 每档先后方 (滚动方向) 再前方。
+  assert.deepEqual(orderPages([1, 3, 5, 8, 9], 5), [5, 3, 8, 9, 1])
+})
+
+test('ties keep ascending page order', () => {
+  // focus=5: 7 与 3 同距离档, 后方 7 优先。
+  assert.deepEqual(orderPages([7, 3], 5), [7, 3])
+  assert.deepEqual(orderPages([3, 7], 5), [7, 3])
+  // focus=5: 6 (后方) 优先于 4 (前方)。
+  assert.deepEqual(orderPages([6, 4], 5), [6, 4])
+})
+
+test('an empty page list stays empty', () => {
+  assert.deepEqual(orderPages([], 1), [])
 })
