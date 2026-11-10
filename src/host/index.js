@@ -1,4 +1,5 @@
 import { inflateRawSync } from 'node:zlib'
+import { maskInlineTokens, restoreInlineTokens } from './protect.js'
 
 /**
  * Host half of the paper reader: one bounded translation route plus the
@@ -48,7 +49,7 @@ const MODEL_SYSTEM = [
   'You are a careful academic translator. You translate research-paper text exactly as written.',
   'Never answer, summarize, or comment on the source; translate it.',
   'Keep numbers, citations such as [13], section numbers, and proper nouns faithful.',
-  'Keep every formula as LaTeX: inline math in $...$, display math in $$...$$ on its own line. Never verbalize or rewrite a formula.',
+  'Copy every ⟦n⟧ token unchanged, exactly once and in order; it hides a formula or an identifier. Never translate, rewrite, move, or delete one.',
   'Never merge, split, reorder, or drop a numbered segment.',
 ].join(' ')
 
@@ -205,14 +206,17 @@ function parseSegments(output, count) {
 }
 
 /** Translate a batch with the configured chat model, returning one entry per text. */
-async function modelTranslate(ctx, route, texts, targetLanguage, signal) {
+export async function modelTranslate(ctx, route, texts, targetLanguage, signal) {
   const llm = ctx.get('llm')
   if (llm === undefined) return new Array(texts.length).fill(null)
-  const numbered = texts.map((text, index) => `[[${index + 1}]] ${text}`).join('\n\n')
+  // Mask formulas and identifiers first: a span the model never sees cannot
+  // be rewritten (the motif pipeline behind Agentero's PDF translation).
+  const masked = texts.map(text => maskInlineTokens(text))
+  const numbered = masked.map((entry, index) => `[[${index + 1}]] ${entry.text}`).join('\n\n')
   const instruction = [
     `Translate each numbered segment into ${languageName(targetLanguage)}.`,
     'Write every translation on its own, starting with the same [[n]] marker.',
-    'Copy any $...$ or $$...$$ math unchanged; translate only the prose around it.',
+    'Copy each ⟦n⟧ token through unchanged, exactly once and in order; translate only the prose around it.',
     'Output nothing else: no preamble, no notes, no source text.',
   ].join('\n')
   const base = {
@@ -229,7 +233,8 @@ async function modelTranslate(ctx, route, texts, targetLanguage, signal) {
   const timeout = new AbortController()
   const timer = setTimeout(() => { timeout.abort(new Error('model translation timed out')) }, MODEL_TIMEOUT_MS)
   const combined = signal === undefined ? timeout.signal : AbortSignal.any([signal, timeout.signal])
-  try {
+  // One model round within this batch's request budget.
+  const callModel = async () => {
     let output
     try {
       output = await streamText(llm, { ...base, signal: combined, reasoningEffort: 'off' })
@@ -238,7 +243,84 @@ async function modelTranslate(ctx, route, texts, targetLanguage, signal) {
       // Providers without an `off` effort reject before dispatch; retry plainly.
       output = await streamText(llm, { ...base, signal: combined })
     }
-    return parseSegments(output, texts.length)
+    return output
+  }
+  /**
+   * Repair ladder for one segment, tightest rung first: a plain retry, then
+   * a retry where the segment travels alone (a smaller answer parses more
+   * reliably), and translation of the prose between placeholders only.
+   */
+  const repairSegment = async (index, depth = 0) => {
+    const entry = masked[index]
+    const single = [
+      'Translate the text after this line.',
+      'Copy each ⟦n⟧ token through unchanged, exactly once and in order; translate only the prose around it.',
+      'Output nothing else: no preamble, no notes, no source text.',
+      '',
+      entry.text,
+    ].join('\n')
+    const round = async (user) => {
+      let output
+      try {
+        output = await streamText(llm, { ...base, messages: [{ role: 'user', content: [{ type: 'text', text: user }] }], signal: combined, reasoningEffort: 'off' })
+      } catch (error) {
+        if (combined.aborted) throw error
+        output = await streamText(llm, { ...base, messages: [{ role: 'user', content: [{ type: 'text', text: user }] }], signal: combined })
+      }
+      return output.trim()
+    }
+    const restore = (candidate) => {
+      const value = restoreInlineTokens(candidate, entry.tokens)
+      return value.missing === 0 && !value.invalid && value.text.trim() !== '' ? value.text.trim() : undefined
+    }
+    if (depth === 0) {
+      const retry = restore(await round(single))
+      if (retry !== undefined) return retry
+    }
+    // Prose-only fallback: translate the fragments between placeholders
+    // separately, so an invented or dropped placeholder in one fragment
+    // cannot damage another.
+    const parts = entry.text.split(/(⟦\s*\d+\s*⟧)/u)
+    const joined = []
+    for (const [position, part] of parts.entries()) {
+      if (/^⟦\s*\d+\s*⟧$/u.test(part) || !/\p{L}/u.test(part)) {
+        joined.push(part)
+        continue
+      }
+      const leading = part.match(/^[\s.,;:!?。；，：！？)\]]*/u)?.[0] ?? ''
+      const translated = await round(part.slice(leading.length))
+      if (/⟦\s*\d+\s*⟧/u.test(translated)) throw new Error('model rewrote a protected formula or identifier')
+      joined.push(leading + translated)
+    }
+    const repaired = restore(joined.join(' '))
+    if (repaired === undefined) throw new Error('model rewrote a protected formula or identifier')
+    return repaired
+  }
+  try {
+    const output = await callModel()
+    const segments = parseSegments(output, texts.length)
+    const results = new Array(texts.length).fill(null)
+    await Promise.all(segments.map(async (candidate, index) => {
+      // A null candidate (missing marker) also enters the repair ladder; a
+      // masked segment restores its own tokens, and validation decides
+      // whether the answer is usable or the ladder's next rung runs.
+      const restoreFrom = (text) => {
+        if (typeof text !== 'string' || text.trim() === '') return undefined
+        const value = restoreInlineTokens(text, masked[index].tokens)
+        return value.missing === 0 && !value.invalid && value.text.trim() !== '' ? value.text.trim() : undefined
+      }
+      const direct = restoreFrom(candidate)
+      if (direct !== undefined) {
+        results[index] = direct
+        return
+      }
+      try {
+        results[index] = await repairSegment(index)
+      } catch {
+        // A failed repair leaves the segment for the anonymous routes.
+      }
+    }))
+    return results
   } finally {
     clearTimeout(timer)
   }
