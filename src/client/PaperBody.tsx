@@ -60,7 +60,9 @@ const LANGUAGE_KEY = 'dsh-paper-reader:language'
 const MAX_FILE_BYTES = 200 * 1024 * 1024
 const ZOOM_STEPS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 /** Batch requests kept in flight; the Host translates one batch per request. */
-const TRANSLATION_CONCURRENCY = 2
+const TRANSLATION_CONCURRENCY = 4
+/** Persist the translation cache after this many batches, and once at completion. */
+const PERSIST_EVERY_BATCHES = 5
 
 type TranslationPhase = 'idle' | 'waiting' | 'parsing' | 'translating' | 'done' | 'failed' | 'unavailable'
 /** Layout-parse schema version; bumping it re-parses stored papers. */
@@ -393,6 +395,7 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
     let provider = cache?.provider
     let failures = 0
     let cursor = 0
+    let persisted = 0
     const runBatch = async (): Promise<void> => {
       while (cursor < batches.length) {
         const batch = batches[cursor]!
@@ -416,7 +419,13 @@ export function PaperBody(props: PaperBodyProps): ReactNode {
         })
         setTranslations({ ...merged })
         setTranslationProgress({ done: Object.keys(merged).length, total: list.length })
-        void persistTranslations(paperId, language, sources, merged, false, provider)
+        // One IndexedDB write per few batches: each write stores the whole
+        // cache object, so per-batch writes repeat the same work.
+        persisted += 1
+        if (persisted >= PERSIST_EVERY_BATCHES) {
+          persisted = 0
+          void persistTranslations(paperId, language, sources, merged, false, provider)
+        }
       }
     }
     await Promise.all(Array.from({ length: Math.min(TRANSLATION_CONCURRENCY, batches.length) }, runBatch))

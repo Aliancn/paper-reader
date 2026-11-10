@@ -549,6 +549,25 @@ export const CSS = String.raw`
 .pr-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; color: inherit; }
 .pr-chip svg { flex: none; }
 .pr-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-settings { --pr-bg: var(--dsw-alias-bg-base, #fff); --pr-layer: var(--dsw-alias-bg-layer-1, #f7f7f8); --pr-layer-2: var(--dsw-alias-bg-layer-2, #fff); --pr-text: var(--dsw-alias-label-primary, #1f2329); --pr-muted: var(--dsw-alias-label-secondary, #5f6672); --pr-faint: var(--dsw-alias-label-tertiary, #8b919c); --pr-border: var(--dsw-alias-border-l2, rgba(0, 0, 0, .12)); --pr-hover: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, .05)); --pr-accent: var(--dsw-alias-state-business-primary, #4d6bfe); display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; color: var(--pr-text, #1f2329); font: var(--dsw-font-xs-13, 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); }
+.pr-settings *, .pr-settings *::before, .pr-settings *::after { box-sizing: border-box; }
+.pr-settings button, .pr-settings input { font: inherit; color: inherit; }
+.pr-settings-head { display: flex; align-items: center; gap: 8px; }
+.pr-settings-head h2 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; }
+.pr-settings-head svg { color: var(--pr-muted, #5f6672); }
+.pr-settings-lead { margin: 0; color: var(--pr-muted, #5f6672); font-size: 12px; line-height: 1.55; }
+.pr-settings-label { font-weight: 550; font-size: 12.5px; }
+.pr-settings-row { display: flex; gap: 8px; align-items: center; }
+.pr-settings-input { flex: 1 1 auto; min-width: 0; min-height: 30px; padding: 5px 9px; color: var(--pr-text, #1f2329); background: var(--pr-layer-2, #fff); border: 1px solid var(--pr-border, rgba(0, 0, 0, .12)); border-radius: 7px; outline: none; }
+.pr-settings-input:focus { border-color: var(--pr-accent, #4d6bfe); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pr-accent, #4d6bfe) 14%, transparent); }
+.pr-settings-inlineSave { display: inline-flex; align-items: center; justify-content: center; width: 30px; }
+.pr-settings-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pr-settings-badge { gap: 6px; color: var(--pr-muted, #5f6672); font-size: 12px; }
+.pr-settings-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--pr-faint, #8b919c); }
+.pr-settings-dot-on { background: #2e9e5b; }
+.pr-settings-source { padding: 1px 7px; color: var(--pr-faint, #8b919c); font-size: 11px; background: var(--pr-layer, #f7f7f8); border-radius: 999px; }
+.pr-settings-parse { color: var(--pr-faint, #8b919c); font-size: 11.5px; }
+.pr-settings-saved { margin: 0; color: #2e7e4f; font-size: 12px; }
 @media (prefers-reduced-motion: reduce) {
   .pr-spinner { animation-duration: 2s; }
   .pr-annotation-flash { animation: none; }

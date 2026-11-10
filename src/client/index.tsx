@@ -1,8 +1,9 @@
-/** Right-sidebar paper reader: guide entry, tab body, live title, and chat composer bridge. */
+/** Right-sidebar paper reader: guide entry, tab body, live title, chat composer bridge, and settings page. */
 import { useCallback, useSyncExternalStore, type ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { PaperBody } from './PaperBody.tsx'
 import { PaperIcon } from './ui.tsx'
+import { SettingsSection } from './settings.tsx'
 import { en, zh, ja, es, fr, de, ru, pt, type PaperLocaleKey } from './locales.ts'
 import { AskBridge } from './ask-bridge.tsx'
 import { useTabTitle } from './tab-title.ts'
@@ -20,7 +21,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-export const inject = ['slots', 'locale', 'sidebarRightTabs']
+export const inject = ['slots', 'locale', 'sidebarRightTabs', 'remote', 'remote.credentials']
 
 function installStyles(): void {
   if (typeof document === 'undefined' || document.getElementById(STYLE_ID) !== null) return
@@ -86,4 +87,14 @@ export function apply(ctx: Context): void {
     order: 5,
     locale: NS,
   }, AskBridge)), 'paper-reader: chat bridge')
+  ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: ID,
+    order: 30,
+    label: () => t('settings.nav'),
+  }, (props: Record<string, unknown>) => <SettingsSection ctx={ctx} t={t} {...props} />)), 'paper-reader: settings section')
+  ctx.effect(() => ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
+    name: 'settings.section.icon',
+    id: ID,
+  }, ({ size }: { size?: number }) => <PaperIcon size={size ?? 16} />)), 'paper-reader: settings icon')
 }

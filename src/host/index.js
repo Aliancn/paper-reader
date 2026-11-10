@@ -155,6 +155,16 @@ async function settle(items, signal, worker) {
   return results
 }
 
+/** Resolve the translation model: a pinned pair wins over the chat default. */
+export function translationRoute(ctx, config) {
+  if (config?.mode === 'service') return undefined
+  if (typeof config?.translation?.provider === 'string' && config.translation.provider !== ''
+    && typeof config?.translation?.model === 'string' && config.translation.model !== '') {
+    return { provider: config.translation.provider, model: config.translation.model }
+  }
+  return modelRoute(ctx)
+}
+
 /** The chat model route, or undefined when no provider/model pair is configured. */
 function modelRoute(ctx) {
   const selection = ctx.get('agentDefaultModel')?.currentSelection?.()
@@ -237,7 +247,7 @@ async function modelTranslate(ctx, route, texts, targetLanguage, signal) {
  * cold boot a row may otherwise apply before `webServer` is active, and a
  * route registered on nothing silently disappears.
  */
-export const inject = ['webServer', 'connection']
+export const inject = ['webServer', 'connection', 'credentials']
 
 /** Read the ZIP central directory without inflating anything yet. */
 function readZipIndex(buffer) {
@@ -404,8 +414,7 @@ async function mineruParse(options, bytes, fileName, signal) {
 export function apply(ctx, config) {
   const webServer = ctx.webServer
   // `mode: 'service'` opts out of model translation and uses the anonymous routes only.
-  const useModel = config?.mode !== 'service'
-
+  // A pinned `translation.provider`/`translation.model` pair wins over the default-model route.
   const handler = async (req, res) => {
     const rejection = ctx.connection.requestRejection(req)
     if (rejection !== undefined) {
@@ -414,7 +423,7 @@ export function apply(ctx, config) {
       return
     }
     const translator = ctx.get('translator')
-    const model = useModel ? modelRoute(ctx) : undefined
+    const model = translationRoute(ctx, config)
     if (req.method === 'GET') {
       sendJson(res, 200, {
         ok: true,
@@ -523,13 +532,27 @@ export function apply(ctx, config) {
     }
   }
 
-  const mineruToken = typeof config?.mineru?.token === 'string' && config.mineru.token !== ''
-    ? config.mineru.token
-    : (typeof process.env.MINERU_TOKEN === 'string' && process.env.MINERU_TOKEN !== '' ? process.env.MINERU_TOKEN : undefined)
   const mineruEndpoint = typeof config?.mineru?.endpoint === 'string' && config.mineru.endpoint !== ''
     ? config.mineru.endpoint
     : MINERU_ENDPOINT
-  const mineruOptions = { token: mineruToken, endpoint: mineruEndpoint }
+
+  /**
+   * Resolve the MinerU token per request: an explicit config value first,
+   * then the credential store (settings page, credentials file, env), then
+   * the process environment. Re-read on every call so a token saved in the
+   * settings page takes effect without a restart.
+   */
+  async function mineruToken() {
+    if (typeof config?.mineru?.token === 'string' && config.mineru.token !== '') return config.mineru.token
+    try {
+      const resolved = await ctx.credentials?.resolve?.('MINERU_TOKEN')
+      if (resolved !== undefined && typeof resolved.value === 'string' && resolved.value !== '') return resolved.value
+    } catch {
+      // A Host without a credential provider mounted resolves nothing.
+    }
+    if (typeof process.env.MINERU_TOKEN === 'string' && process.env.MINERU_TOKEN !== '') return process.env.MINERU_TOKEN
+    return undefined
+  }
 
   const parseHandler = async (req, res) => {
     const rejection = ctx.connection.requestRejection(req)
@@ -539,7 +562,8 @@ export function apply(ctx, config) {
       return
     }
     if (req.method === 'GET') {
-      sendJson(res, 200, { ok: true, available: mineruToken !== undefined })
+      const token = await mineruToken()
+      sendJson(res, 200, { ok: true, available: token !== undefined })
       return
     }
     if (req.method !== 'POST') {
@@ -547,10 +571,12 @@ export function apply(ctx, config) {
       sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
       return
     }
-    if (mineruToken === undefined) {
+    const token = await mineruToken()
+    if (token === undefined) {
       sendJson(res, 503, { ok: false, error: 'mineru-unavailable' })
       return
     }
+    const options = { token, endpoint: mineruEndpoint }
     const controller = new AbortController()
     const timeout = setTimeout(() => { controller.abort(new Error('parse timed out')) }, MINERU_TIMEOUT_MS + 60_000)
     const onClose = () => { if (!res.writableEnded) controller.abort(new Error('client closed')) }
@@ -564,7 +590,7 @@ export function apply(ctx, config) {
         sendJson(res, 400, { ok: false, error: 'empty-file' })
         return
       }
-      const parsed = await mineruParse(mineruOptions, bytes, name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`, controller.signal)
+      const parsed = await mineruParse(options, bytes, name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`, controller.signal)
       sendJson(res, 200, { ok: true, pages: parsed.pages, paragraphs: parsed.paragraphs })
     } catch (error) {
       if (!res.writableEnded) {
@@ -579,7 +605,9 @@ export function apply(ctx, config) {
 
   ctx.effect(() => {
     const dispose = webServer.register({ kind: 'exact', path: PARSE_ROUTE, handler: parseHandler })
-    ctx.logger?.info?.('paper-reader: MinerU parse route ready (available: %s)', mineruToken !== undefined)
+    void mineruToken().then((token) => {
+      ctx.logger?.info?.('paper-reader: MinerU parse route ready (available: %s)', token !== undefined)
+    })
     return dispose
   }, 'paper-reader: MinerU parse route')
 

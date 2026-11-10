@@ -18,6 +18,7 @@ A right-sidebar paper reader for DeepSeek Harness. Upload a PDF and read it on a
 - **Highlights and notes** — normalized page rectangles survive zoom and width changes; notes and highlights persist per paper.
 - **Ask in chat** — the hover card carries an “Ask in chat” action that quotes the whole hovered paragraph, so no drag is needed. The text-selection menu keeps its own entry for a partial passage. Either way a dialog opens with a default prompt in the current UI language, inserts the prompt and the quoted passage (atomic quote on newer shells, Markdown blockquote on older shells) into the current composer, and leaves sending to the user.
 - **Zoom and page navigation** — fit-width, step zoom, previous/next page, and page indicator.
+- **Settings page** — Settings → Paper reader configures the MinerU token through the harness credential store, with a live status badge, the token's source, and a privacy note.
 
 ## Layout parsing
 
@@ -30,17 +31,23 @@ The parse is cached in IndexedDB per paper, so MinerU runs once per uploaded fil
 
 ### Configuring MinerU
 
-Add the token to the `paper-reader` row of the profile's `cordis.patch.yml`:
+Settings → Paper reader holds a token field. The value is stored through the harness credential store (`MINERU_TOKEN`) on the device, takes effect immediately — no restart — and a saved token is picked up by the parse route on the next request. The page also shows whether the token comes from the credential store or an environment variable, and a Remove button clears it again.
 
-```yaml
-- id: paper-reader
-  name: dsh-paper-reader
-  config:
-    mineru:
-      token: sk-...
-```
+The same route also reads these sources, in this order:
 
-`MINERU_TOKEN` in the Host environment works too. `mineru.endpoint` overrides the API base URL (default `https://mineru.net/api/v4`) for a compatible self-hosted deployment.
+1. The `paper-reader` row of the profile's `cordis.patch.yml`:
+
+   ```yaml
+   - id: paper-reader
+     name: dsh-paper-reader
+     config:
+       mineru:
+         token: sk-...
+   ```
+
+2. `MINERU_TOKEN` in the Host environment (or a credentials file the harness reads).
+
+`mineru.endpoint` overrides the API base URL (default `https://mineru.net/api/v4`) for a compatible self-hosted deployment.
 
 With MinerU enabled the PDF itself is uploaded to that service; without a token nothing leaves the device except paragraph text for translation.
 
@@ -52,7 +59,20 @@ The configured chat model (the default model from Settings, e.g. `deepseek-flash
 
 Set `config: { mode: 'service' }` on the `paper-reader` row in `cordis.patch.yml` to skip the model entirely and translate only through the anonymous routes.
 
-Each request carries at most 10 model-translated paragraphs (24 in service mode), 12 000 characters per paragraph, and 8 000 characters per model batch; the browser keeps two batches in flight. Failures are reported per paragraph, so the reader keeps the paragraphs that succeeded and offers a retry for the rest.
+Pin the translation model independently of the chat default model with `translation.provider` / `translation.model` on the same row:
+
+```yaml
+- id: paper-reader
+  name: dsh-paper-reader
+  config:
+    translation:
+      provider: bifrost
+      model: sgl/deepseek-v4.1-flash
+```
+
+A pinned model must answer without narration: the batch answer is split on `[[n]]` markers, so a model that writes a preamble before the first marker loses that batch to the slower anonymous routes. Choose a model that follows the marker format directly.
+
+Each request carries at most 10 model-translated paragraphs (24 in service mode), 12 000 characters per paragraph, and 8 000 characters per model batch; the browser keeps four batches in flight. Failures are reported per paragraph, so the reader keeps the paragraphs that succeeded and offers a retry for the rest.
 
 Translations are stored in IndexedDB, keyed by paper and target language, together with the source text of each paragraph and the extraction-geometry version. A changed geometry version, a different source text, or a deleted cache entry simply re-derives the paragraph instead of reusing a stale box.
 
